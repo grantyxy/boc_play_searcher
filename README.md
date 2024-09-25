@@ -38,7 +38,7 @@ python 主程序.py
 4. **查看结果**：左侧文本框显示匹配的剧本名称，右侧文本框显示对应的 JSON 文件名。
 
 ## 程序截图
-![这是图片](screenshot-20240926-022029.png "Magic Gardens")
+![这是图片](程序截图.png "Magic Gardens")
 
 
 ## 项目结构
