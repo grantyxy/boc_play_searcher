@@ -1,185 +1,226 @@
 import json
 import os
-import tkinter as tk
-from tkinter import scrolledtext, filedialog, messagebox, ttk
+import sys
+from PyQt6.QtWidgets import (
+    QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout,
+    QHBoxLayout, QComboBox, QTextEdit, QFileDialog, QMessageBox
+)
 
-def read_json_file(file_path):
-    try:
-        with open(file_path, 'r', encoding='utf-8-sig') as file:
-            return json.load(file)
-    except Exception as e:
-        messagebox.showerror("错误", f"无法读取或解析文件: {file_path}\n错误: {str(e)}")
-    return None
-
-def find_plays_with_conditions(directory, conditions):
-    play_names = []
-    file_names = []
-    for filename in os.listdir(directory):
-        if filename.endswith('.json'):
-            file_path = os.path.join(directory, filename)
-            data = read_json_file(file_path)
-            if data:
-                # 尝试从 _meta 中提取剧本名称
-                play_name = next((item.get('name') for item in data if item.get('id') == "_meta"), None)
-
-                # 如果没有找到剧本名称，使用文件名作为剧本名称
-                if not play_name:
-                    play_name = os.path.splitext(filename)[0]  # 去掉文件扩展名
-
-                # 提取角色名
-                character_set = set(item.get('name') for item in data if item.get('id') != "_meta" and 'name' in item)
-
-                # 处理 AND 和 OR 条件
-                if evaluate_conditions(character_set, conditions):
-                    play_names.append(play_name)
-                    file_names.append(filename)
-    return play_names, file_names
 
 def evaluate_conditions(character_set, conditions):
     """根据 AND 和 OR 条件评估角色是否匹配"""
     and_conditions = [cond['term'] for cond in conditions if cond['type'] == "AND"]
     or_conditions = [cond['term'] for cond in conditions if cond['type'] == "OR"]
 
-    # AND 条件：所有必须存在
     if all(cond in character_set for cond in and_conditions):
-        # OR 条件：至少有一个存在
         if not or_conditions or any(cond in character_set for cond in or_conditions):
             return True
     return False
 
-def search_plays():
-    directory = directory_path.get()
-    if not os.path.isdir(directory):
-        messagebox.showerror("错误", "请选择一个有效的目录！")
-        return
 
-    # 收集用户添加的条件
-    conditions = []
-    for row in search_rows:
-        condition_type = row['condition_type'].get()
-        search_term = row['search_term'].get().strip()
-        if search_term:
-            conditions.append({"type": condition_type, "term": search_term})
+class PlayFinder(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.search_conditions = None
+        self.result_text_plays = None
+        self.search_frame_layout = None
+        self.result_text_files = None
+        self.directory_path = None
+        self.settings_file = 'settings.json'  # 用于保存目录路径的文件
+        self.initUI()
 
-    if not conditions:
-        messagebox.showwarning("警告", "请输入至少一个搜索条件！")
-        return
+    def initUI(self):
+        self.setWindowTitle("《染·钟楼谜团》剧本查找器")
+        self.setGeometry(100, 100, 800, 600)
 
-    play_names, file_names = find_plays_with_conditions(directory, conditions)
+        # 创建主布局
+        main_layout = QVBoxLayout(self)
 
-    result_text_plays.config(state=tk.NORMAL)
-    result_text_plays.delete('1.0', tk.END)
+        # 目录选择区域
+        directory_layout = QHBoxLayout()
+        self.directory_path = QLineEdit()
+        browse_button = QPushButton("浏览目录")
+        browse_button.clicked.connect(self.select_directory)
+        directory_layout.addWidget(QLabel("目录路径："))
+        directory_layout.addWidget(self.directory_path)
+        directory_layout.addWidget(browse_button)
+        main_layout.addLayout(directory_layout)
 
-    result_text_files.config(state=tk.NORMAL)
-    result_text_files.delete('1.0', tk.END)
+        # 读取上次的目录路径
+        self.load_last_directory()
 
-    if play_names:
-        result_text_plays.insert(tk.INSERT, "\n".join(play_names))
-        result_text_files.insert(tk.INSERT, "\n".join(file_names))
-    else:
-        result_text_plays.insert(tk.INSERT, "未找到包含指定条件的剧本。")
-        result_text_files.insert(tk.INSERT, "")
+        # 搜索条件区域
+        main_layout.addWidget(QLabel("搜索条件："))
+        self.search_conditions = []
+        self.search_frame_layout = QVBoxLayout()
+        self.add_search_row()  # 添加第一行搜索条件
+        main_layout.addLayout(self.search_frame_layout)
 
-    result_text_plays.config(state=tk.DISABLED)
-    result_text_files.config(state=tk.DISABLED)
+        # 添加/清除条件按钮
+        button_layout = QHBoxLayout()
+        add_row_button = QPushButton("添加条件")
+        add_row_button.clicked.connect(self.add_search_row)
+        clear_button = QPushButton("清除条件")
+        clear_button.clicked.connect(self.clear_search_rows)
+        button_layout.addWidget(add_row_button)
+        button_layout.addWidget(clear_button)
+        main_layout.addLayout(button_layout)
 
-def select_directory():
-    directory = filedialog.askdirectory()
-    if directory:
-        directory_path.set(directory)
+        # 设置结果显示区域
+        results_layout = QHBoxLayout()
 
-def add_search_row():
-    row_frame = tk.Frame(search_frame)
-    row_frame.pack(fill=tk.X, pady=5)
+        # 设置字体加粗
+        font = QLabel().font()
+        font.setBold(True)
 
-    condition_type = ttk.Combobox(row_frame, values=["AND", "OR"], width=5)
-    condition_type.set("AND")
-    condition_type.pack(side=tk.LEFT, padx=5)
+        # 剧本名区域
+        script_layout = QVBoxLayout()
+        script_name_label = QLabel("剧本名：")
+        script_name_label.setFont(font)
+        self.result_text_plays = QTextEdit()
+        self.result_text_plays.setReadOnly(True)
+        script_layout.addWidget(script_name_label)
+        script_layout.addWidget(self.result_text_plays)
 
-    field_label = tk.Label(row_frame, text="角色名")
-    field_label.pack(side=tk.LEFT)
+        # 文件名区域
+        file_layout = QVBoxLayout()
+        file_name_label = QLabel("文件名：")
+        file_name_label.setFont(font)
+        self.result_text_files = QTextEdit()
+        self.result_text_files.setReadOnly(True)
+        file_layout.addWidget(file_name_label)
+        file_layout.addWidget(self.result_text_files)
 
-    search_term = tk.Entry(row_frame, width=30)
-    search_term.pack(side=tk.LEFT, padx=5)
+        # 将左右两个布局添加到结果布局中
+        results_layout.addLayout(script_layout)
+        results_layout.addLayout(file_layout)
 
-    # 添加 "-" 按钮
-    remove_button = tk.Button(row_frame, text="-", command=lambda: remove_search_row(row_frame))
-    remove_button.pack(side=tk.LEFT, padx=5)
+        # 添加到主布局
+        main_layout.addLayout(results_layout)
 
-    search_rows.append({"frame": row_frame, "condition_type": condition_type, "search_term": search_term})
+        # 搜索按钮
+        search_button = QPushButton("搜索剧本")
+        search_button.clicked.connect(self.search_plays)
+        main_layout.addWidget(search_button)
 
-def remove_search_row(row_frame):
-    """移除指定的搜索行"""
-    for row in search_rows:
-        if row['frame'] == row_frame:
-            row_frame.destroy()  # 从界面上移除
-            search_rows.remove(row)  # 从搜索条件中移除
-            break
+        self.setLayout(main_layout)
 
-def clear_search_rows():
-    for row in search_rows:
-        row['frame'].destroy()
-    search_rows.clear()
+    def select_directory(self):
+        directory = QFileDialog.getExistingDirectory(self, "选择目录")
+        if directory:
+            self.directory_path.setText(directory)
+            self.save_last_directory(directory)  # 保存选择的目录路径
 
-def make_popup(event):
-    try:
-        popup.tk_popup(event.x_root, event.y_root)
-    finally:
-        popup.grab_release()
+    def add_search_row(self):
+        row_layout = QHBoxLayout()
+        condition_type = QComboBox()
+        condition_type.addItems(["AND", "OR"])
+        search_term = QLineEdit()
+        remove_button = QPushButton("-")
+        remove_button.clicked.connect(lambda: self.remove_search_row(row_layout))
 
-# 创建主窗口
-root = tk.Tk()
-root.title("《染·钟楼谜团》剧本查找器")
+        row_layout.addWidget(condition_type)
+        row_layout.addWidget(QLabel("角色名"))
+        row_layout.addWidget(search_term)
+        row_layout.addWidget(remove_button)
 
-# 创建右键菜单
-popup = tk.Menu(root, tearoff=0)
-popup.add_command(label="Copy", command=lambda: root.focus_get().event_generate('<<Copy>>'))
-popup.add_command(label="Paste", command=lambda: root.focus_get().event_generate('<<Paste>>'))
+        self.search_conditions.append({"layout": row_layout, "condition_type": condition_type, "search_term": search_term})
+        self.search_frame_layout.addLayout(row_layout)
 
-# 设置目录选择区域
-tk.Label(root, text="目录路径：").pack(pady=5)
-directory_frame = tk.Frame(root)
-directory_path = tk.StringVar()
-directory_entry = tk.Entry(directory_frame, textvariable=directory_path, width=50)
-directory_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-browse_button = tk.Button(directory_frame, text="浏览目录", command=select_directory)
-browse_button.pack(side=tk.RIGHT)
-directory_frame.pack(padx=10, pady=5)
+    def remove_search_row(self, row_layout):
+        """移除指定的搜索行"""
+        for condition in self.search_conditions:
+            if condition["layout"] == row_layout:
+                for i in reversed(range(row_layout.count())):
+                    widget = row_layout.itemAt(i).widget()
+                    if widget:
+                        widget.deleteLater()
+                self.search_frame_layout.removeItem(row_layout)
+                self.search_conditions.remove(condition)
+                break
 
-# 设置搜索条件区域
-tk.Label(root, text="搜索条件：").pack(pady=5)
-search_frame = tk.Frame(root)
-search_frame.pack(pady=5)
+    def clear_search_rows(self):
+        """清除所有搜索条件"""
+        while self.search_conditions:
+            condition = self.search_conditions.pop()
+            condition['layout'].deleteLater()
 
-search_rows = []
-add_search_row()  # 添加第一行搜索条件
+    def search_plays(self):
+        directory = self.directory_path.text()
+        if not os.path.isdir(directory):
+            QMessageBox.critical(self, "错误", "请选择一个有效的目录！")
+            return
 
-# 添加按钮行
-button_frame = tk.Frame(root)
-button_frame.pack(pady=10)
-add_row_button = tk.Button(button_frame, text="添加条件", command=add_search_row)
-add_row_button.pack(side=tk.LEFT, padx=5)
-clear_button = tk.Button(button_frame, text="清除条件", command=clear_search_rows)
-clear_button.pack(side=tk.LEFT, padx=5)
+        # 收集用户添加的条件
+        conditions = []
+        for condition in self.search_conditions:
+            condition_type = condition['condition_type'].currentText()
+            search_term = condition['search_term'].text().strip()
+            if search_term:
+                conditions.append({"type": condition_type, "term": search_term})
 
-# 设置左右分栏的显示框架
-results_frame = tk.Frame(root)
-results_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        if not conditions:
+            QMessageBox.warning(self, "警告", "请输入至少一个搜索条件！")
+            return
 
-# 设置左侧的剧本名称区域
-tk.Label(results_frame, text="剧本名：", font=('Helvetica', 12, 'bold')).grid(row=0, column=0)
-result_text_plays = scrolledtext.ScrolledText(results_frame, height=20, width=40)
-result_text_plays.config(state=tk.DISABLED)
-result_text_plays.grid(row=1, column=0, padx=5)
+        # 搜索剧本
+        play_names, file_names = self.find_plays_with_conditions(directory, conditions)
 
-# 设置右侧的文件名区域
-tk.Label(results_frame, text="文件名：", font=('Helvetica', 12, 'bold')).grid(row=0, column=1)
-result_text_files = scrolledtext.ScrolledText(results_frame, height=20, width=40)
-result_text_files.config(state=tk.DISABLED)
-result_text_files.grid(row=1, column=1, padx=5)
+        # 更新显示结果
+        self.result_text_plays.clear()
+        self.result_text_files.clear()
 
-# 设置搜索按钮
-search_button = tk.Button(root, text="搜索剧本", command=search_plays)
-search_button.pack(pady=10)
+        if play_names:
+            self.result_text_plays.append("\n".join(play_names))
+            self.result_text_files.append("\n".join(file_names))
+        else:
+            self.result_text_plays.append("未找到包含指定条件的剧本。")
 
-root.mainloop()
+    def find_plays_with_conditions(self, directory, conditions):
+        play_names = []
+        file_names = []
+        for filename in os.listdir(directory):
+            if filename.endswith('.json'):
+                file_path = os.path.join(directory, filename)
+                data = self.read_json_file(file_path)
+                if data:
+                    play_name = next((item.get('name') for item in data if item.get('id') == "_meta"), None)
+                    if not play_name:
+                        play_name = os.path.splitext(filename)[0]
+
+                    character_set = set(item.get('name') for item in data if item.get('id') != "_meta" and 'name' in item)
+
+                    if evaluate_conditions(character_set, conditions):
+                        play_names.append(play_name)
+                        file_names.append(filename)
+        return play_names, file_names
+
+    def read_json_file(self, file_path):
+        try:
+            with open(file_path, 'r', encoding='utf-8-sig') as file:
+                return json.load(file)
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"无法读取或解析文件: {file_path}\n错误: {str(e)}")
+        return None
+
+    # 新增部分：保存并读取目录路径
+    def save_last_directory(self, directory):
+        """保存上次选择的目录路径到文件"""
+        settings = {'last_directory': directory}
+        with open(self.settings_file, 'w') as f:
+            json.dump(settings, f)
+
+    def load_last_directory(self):
+        """加载上次保存的目录路径"""
+        if os.path.exists(self.settings_file):
+            with open(self.settings_file, 'r') as f:
+                settings = json.load(f)
+                last_directory = settings.get('last_directory', '')
+                self.directory_path.setText(last_directory)
+
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    window = PlayFinder()
+    window.show()
+    sys.exit(app.exec())
